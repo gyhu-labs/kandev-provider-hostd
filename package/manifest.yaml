@@ -6,7 +6,7 @@ id: "kandev-provider-hostd"
 api_version: 2
 # pluginsdk v0.4.0 (host_release 0.103.0) is pinned in go.mod.
 min_kandev_version: "0.103.0"
-version: "0.1.1"
+version: "0.1.2"
 display_name: "hostd.cloud VM executor"
 description: "One hostd.cloud VM per Kandev environment; agentctl behind an IP certificate from a name-constrained CA."
 author: "gyhu-labs"
@@ -86,6 +86,12 @@ executor_providers:
         install_docker:
           type: boolean
           title: Install docker.io and git at bootstrap
+        install_node:
+          type: boolean
+          title: Install Node.js 24 (official tarball, sha256-pinned) for Kandev's npx agent launch (default true)
+        agent_npm_packages:
+          type: string
+          title: Exact npm agent packages to pre-install into the npx cache (comma separated name@x.y.z; "none" to skip; default Kandev's claude-acp pin)
         ca_cert_pem:
           type: string
           title: Name-constrained CA certificate (PEM)

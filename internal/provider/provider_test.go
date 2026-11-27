@@ -127,7 +127,7 @@ func (f *fixture) provider() *Provider {
 		return c
 	}
 	p.PollEvery, p.IPv4RetryEvery = time.Millisecond, time.Millisecond
-	p.Logf = func(string, ...any) {}
+	p.Logf, p.Warnf = func(string, ...any) {}, nil
 	return p
 }
 
@@ -171,6 +171,11 @@ func TestProvisionIsIdempotentPerOperation(t *testing.T) {
 	}
 	if f.boot.last.Nonce != "n0nce-value" || f.boot.last.RuntimePort != 8765 {
 		t.Fatal("bootstrap must carry Kandev's nonce and runtime_port")
+	}
+	// Kandev launches claude-acp with npx on the VM: Node and the pinned
+	// agent package are installed by default.
+	if !f.boot.last.InstallNode || len(f.boot.last.AgentPackages) != 1 || f.boot.last.AgentPackages[0] != DefaultAgentPackages {
+		t.Fatalf("bootstrap must install node and %s by default, got %v %v", DefaultAgentPackages, f.boot.last.InstallNode, f.boot.last.AgentPackages)
 	}
 }
 
@@ -277,13 +282,13 @@ func TestValidateProfile(t *testing.T) {
 	if len(ok.GetFieldErrors()) != 0 {
 		t.Fatalf("valid profile rejected: %v", ok.GetFieldErrors())
 	}
-	bad := map[string]string{cfgCPUMode: "turbo", cfgCores: "16", cfgMaxLifetime: "720h"}
+	bad := map[string]string{cfgCPUMode: "turbo", cfgCores: "16", cfgMaxLifetime: "720h", cfgAgentPackages: "x@latest"}
 	r, _ := p.ValidateExecutorProfile(context.Background(), &pluginsdk.ValidateExecutorProfileRequest{Profile: &pluginsdk.ExecutorProfileSnapshot{Config: bad}})
 	got := map[string]bool{}
 	for _, e := range r.GetFieldErrors() {
 		got[e.GetField()] = true
 	}
-	for _, k := range []string{cfgProject, cfgCPUMode, cfgCores, cfgMaxLifetime, cfgCACertPEM, cfgSSHKeyID} {
+	for _, k := range []string{cfgProject, cfgCPUMode, cfgCores, cfgMaxLifetime, cfgCACertPEM, cfgSSHKeyID, cfgAgentPackages} {
 		if !got[k] {
 			t.Errorf("expected field error for %s", k)
 		}
@@ -349,7 +354,7 @@ func TestManifestMatchesCode(t *testing.T) {
 		}
 	}
 	for _, k := range []string{cfgProject, cfgAPIBaseURL, cfgCPUMode, cfgCores, cfgRAMGB, cfgDiskGB, cfgImage, cfgMaxLifetime,
-		cfgSSHKeyID, cfgSSHUser, cfgPermittedCIDRs, cfgEdgePort, cfgInstallDocker, cfgCACertPEM, cfgBrokerUpstream} {
+		cfgSSHKeyID, cfgSSHUser, cfgPermittedCIDRs, cfgEdgePort, cfgInstallDocker, cfgInstallNode, cfgAgentPackages, cfgCACertPEM, cfgBrokerUpstream} {
 		if _, ok := pv.ProfileSchema.Properties[k]; !ok {
 			t.Errorf("profile option %s missing from profile_schema", k)
 		}
@@ -403,6 +408,7 @@ func TestCredentialFailuresAreLoggedWithoutSecrets(t *testing.T) {
 		logs = append(logs, fmt.Sprintf(format, a...))
 		mu.Unlock()
 	}
+	p.Warnf = p.Logf
 	if r := f.provision(t, p, "op-F"); r.GetError().GetCode() != "invalid_credentials" || r.GetResource() != nil {
 		t.Fatalf("want invalid_credentials without a resource, got %v", r.GetError())
 	}

@@ -11,8 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
+	"os"
 	"regexp"
 	"strconv"
 	"sync"
@@ -21,6 +21,7 @@ import (
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/hostd"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/lease"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/tlsca"
+	"github.com/hashicorp/go-hclog"
 	"github.com/kdlbs/kandev/pluginsdk"
 )
 
@@ -59,7 +60,10 @@ type Provider struct {
 	NewClient    func(baseURL, project, token string) HostdAPI
 	Bootstrapper Bootstrapper
 	Now          func() time.Time
-	Logf         func(format string, args ...any)
+	// Logf logs progress at info, Warnf failures at warn (falls back to
+	// Logf when nil). Never pass secrets.
+	Logf  func(format string, args ...any)
+	Warnf func(format string, args ...any)
 	// PollEvery and IPv4RetryEvery tune waits (tests set them to ~0).
 	PollEvery      time.Duration
 	IPv4RetryEvery time.Duration
@@ -74,13 +78,15 @@ var _ pluginsdk.ExecutorProviderPlugin = (*Provider)(nil)
 
 // New returns a provider with production defaults.
 func New() *Provider {
+	l := NewLogger(os.Stderr)
 	return &Provider{
 		Artifact:     hostArtifact,
 		EdgeBinary:   defaultEdgeBinary,
 		NewClient:    func(b, p, t string) HostdAPI { return hostd.New(b, p, t) },
 		Bootstrapper: sshBootstrapper{},
 		Now:          time.Now,
-		Logf:         log.Printf,
+		Logf:         LevelLogf(l, hclog.Info),
+		Warnf:        LevelLogf(l, hclog.Warn),
 		PollEvery:    2 * time.Second, IPv4RetryEvery: 15 * time.Second,
 	}
 }
@@ -264,7 +270,7 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 		// Kandev drops a provider error that comes without a resource and
 		// reports only "allocation outcome is unknown", so this log line is
 		// the only place the cause shows. Credential errors carry no values.
-		p.logf("op=%s profile=%s credentials: %v", short(rc.GetOperationId()), prof.ID, err)
+		p.warnf("op=%s profile=%s credentials: %v", short(rc.GetOperationId()), prof.ID, err)
 		return &pluginsdk.ProvisionExecutorEnvironmentResponse{Error: providerError("invalid_credentials", 0)}, nil
 	}
 	boot, err := parseBootstrap(req.GetBootstrapJson())
@@ -275,7 +281,7 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 	// only surface later as a failed clone.
 	relayHost, err := relayTarget(boot.APIURL, prof.BrokerUpstream)
 	if err != nil {
-		p.logf("op=%s broker relay: %v", short(rc.GetOperationId()), err)
+		p.warnf("op=%s broker relay: %v", short(rc.GetOperationId()), err)
 		return &pluginsdk.ProvisionExecutorEnvironmentResponse{Error: providerError("relay_unavailable", 0, fieldErr(cfgBrokerUpstream, "unusable"))}, nil
 	}
 	unlock := p.lockOp(rc.GetOperationId())
@@ -299,14 +305,17 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 		return &pluginsdk.ProvisionExecutorEnvironmentResponse{Error: providerError("capacity_unavailable", 60)}, nil
 	case err != nil:
 		// Unknown outcome: Kandev calls RecoverExecutorOperation next.
+		p.warnf("op=%s create VM failed after %s: %v", short(rc.GetOperationId()), p.Now().Sub(t).Round(time.Millisecond), err)
 		return nil, fmt.Errorf("hostd provider: create VM: %w", err)
 	}
 	p.logf("op=%s vm=%d %s in %s (ipv4 retries %d)", short(rc.GetOperationId()), vmid, outcome, p.Now().Sub(t).Round(time.Millisecond), ipRetries)
 
 	ip, err := p.waitIPv4(ctx, client, vmid)
 	if err != nil {
+		p.warnf("op=%s vm=%d no IPv4 after %s: %v", short(rc.GetOperationId()), vmid, p.Now().Sub(t).Round(time.Millisecond), err)
 		return nil, err
 	}
+	p.logf("op=%s vm=%d ip %s at +%s", short(rc.GetOperationId()), vmid, ip, p.Now().Sub(t).Round(time.Millisecond))
 	now := p.Now().UTC()
 	state := State{
 		VMID: vmid, IP: ip, Project: prof.Project, Hostname: hostname, ProfileID: prof.ID, APIBaseURL: prof.APIBaseURL,
@@ -316,7 +325,7 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 	if !creds.CA.Permits(net.ParseIP(ip)) {
 		// The CA cannot certify this address, so Kandev could never verify the
 		// edge: fail before spending time on the bootstrap.
-		p.logf("op=%s vm=%d ip %s is outside the CA constraints", short(rc.GetOperationId()), vmid, ip)
+		p.warnf("op=%s vm=%d ip %s is outside the CA constraints", short(rc.GetOperationId()), vmid, ip)
 		return &pluginsdk.ProvisionExecutorEnvironmentResponse{Resource: descriptor(state), Error: providerError("ip_outside_ca_constraints", 0)}, nil
 	}
 	p.checkpoint(ctx, cb, rc, state, "bootstrapping")
@@ -335,6 +344,7 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 		IP: ip, User: prof.SSHUser, Signer: creds.SSHSigner, Resource: Handle(prof.Project, vmid),
 		RuntimePort: boot.RuntimePort, EdgePort: prof.EdgePort, Nonce: boot.Nonce, APIURL: boot.APIURL,
 		LeaseKey: lease.DeriveVMKey(creds.LeaseSecret, rc.GetOperationId()), InstallTools: prof.InstallDocker,
+		InstallNode: prof.InstallNode, AgentPackages: prof.AgentPackages,
 		RelayHost: relayHost, RelayUpstream: prof.BrokerUpstream,
 		Agentctl: agentctl, Edge: edgeBin,
 		SignCSR: func(csr []byte, leafIP net.IP) ([]byte, time.Time, error) {
@@ -349,10 +359,11 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 		},
 	})
 	if err != nil {
-		p.logf("op=%s vm=%d bootstrap failed: %v", short(rc.GetOperationId()), vmid, err)
+		p.warnf("op=%s vm=%d bootstrap failed at +%s: %v", short(rc.GetOperationId()), vmid, p.Now().Sub(t).Round(time.Millisecond), err)
 		// Return the resource with the error so Kandev destroys it.
 		return &pluginsdk.ProvisionExecutorEnvironmentResponse{Resource: descriptor(state), Error: providerError("bootstrap_failed", 0)}, nil
 	}
+	p.logf("op=%s vm=%d provision ready at +%s", short(rc.GetOperationId()), vmid, p.Now().Sub(t).Round(time.Millisecond))
 	state.SSHHostKey = res.HostKey
 	state.LeafExpiresAt = res.LeafNotAfter.UTC().Format(time.RFC3339Nano)
 	state.Bootstrapped = true
@@ -394,7 +405,7 @@ func (p *Provider) RecoverExecutorOperation(ctx context.Context, req *pluginsdk.
 	}
 	creds, err := p.rememberCredentials(ctx, prof, req.GetProfile().GetSecretValues())
 	if err != nil {
-		p.logf("op=%s profile=%s recover credentials: %v", short(rc.GetOperationId()), prof.ID, err)
+		p.warnf("op=%s profile=%s recover credentials: %v", short(rc.GetOperationId()), prof.ID, err)
 		return &pluginsdk.RecoverExecutorOperationResponse{Outcome: "unknown", Error: providerError("credentials_unavailable", 0)}, nil
 	}
 	client := p.NewClient(prof.APIBaseURL, prof.Project, creds.Token)
@@ -545,7 +556,7 @@ func (p *Provider) DestroyExecutorEnvironment(ctx context.Context, req *pluginsd
 	if err != nil || !absent {
 		// Kandev's launch-failure cleanup allows 30 s; a slow stop finishes on
 		// the next (idempotent) Destroy.
-		p.logf("vm=%d destroy pending after %s: %v", s.VMID, p.Now().Sub(t).Round(time.Millisecond), err)
+		p.warnf("vm=%d destroy pending after %s: %v", s.VMID, p.Now().Sub(t).Round(time.Millisecond), err)
 		return &pluginsdk.DestroyExecutorEnvironmentResponse{Error: providerError("cleanup_in_progress", 15)}, nil
 	}
 	if s.IP != "" {
@@ -555,7 +566,7 @@ func (p *Provider) DestroyExecutorEnvironment(ctx context.Context, req *pluginsd
 		}
 		for _, ip := range ips {
 			if ip.IP == s.IP {
-				p.logf("vm=%d deleted but %s is still reserved (status %s)", s.VMID, ip.IP, ip.Status)
+				p.warnf("vm=%d deleted but %s is still reserved (status %s)", s.VMID, ip.IP, ip.Status)
 				return &pluginsdk.DestroyExecutorEnvironmentResponse{Error: providerError("public_ip_retained", 60)}, nil
 			}
 		}
@@ -576,7 +587,7 @@ func (p *Provider) checkpoint(ctx context.Context, cb pluginsdk.ExecutorProvider
 		return
 	}
 	if _, err := cb.CheckpointExecutorResource(ctx, &pluginsdk.CheckpointExecutorResourceRequest{Context: rc, Resource: descriptor(s), Phase: phase}); err != nil {
-		p.logf("vm=%d checkpoint %s rejected: %v", s.VMID, phase, err)
+		p.warnf("vm=%d checkpoint %s rejected: %v", s.VMID, phase, err)
 	}
 }
 
@@ -584,6 +595,14 @@ func (p *Provider) logf(format string, args ...any) {
 	if p.Logf != nil {
 		p.Logf(format, args...)
 	}
+}
+
+func (p *Provider) warnf(format string, args ...any) {
+	if p.Warnf != nil {
+		p.Warnf(format, args...)
+		return
+	}
+	p.logf(format, args...)
 }
 
 // sameVM guards against hostd's vmid reuse: a handle is ours only while the

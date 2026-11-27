@@ -47,6 +47,10 @@ type BootstrapInput struct {
 	APIURL       string
 	LeaseKey     []byte
 	InstallTools bool
+	// InstallNode installs the pinned Node.js and pre-installs AgentPackages
+	// (agentruntime.go); Kandev launches its agents with npx on the VM.
+	InstallNode   bool
+	AgentPackages []string
 	// RelayHost/RelayUpstream enable the loopback Git credential broker
 	// relay (edge/relay.go): RelayHost is the broker name from Kandev's
 	// api_url, RelayUpstream the public origin it is forwarded to.
@@ -92,7 +96,18 @@ func (sshBootstrapper) Bootstrap(ctx context.Context, in BootstrapInput) (*Boots
 	// Packages and binaries in parallel: apt is network-bound on the VM side,
 	// the uploads are bound by the plugin's uplink.
 	var wg sync.WaitGroup
-	errs := make([]error, 3)
+	errs := make([]error, 4)
+	if in.InstallNode {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s := time.Now()
+			if _, err := conn.Run(ctx, agentRuntimeScript(in.AgentPackages), nil); err != nil {
+				errs[3] = fmt.Errorf("node agent runtime: %w", err)
+			}
+			phase(in, "node_agent_runtime", s)
+		}()
+	}
 	if in.InstallTools {
 		wg.Add(1)
 		go func() {
