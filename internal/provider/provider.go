@@ -41,7 +41,7 @@ type HostdAPI interface {
 	VMIDsByName(ctx context.Context, hostname string) ([]int64, error)
 	GetVM(ctx context.Context, vmid int64) (*hostd.VM, error)
 	GetVMConfig(ctx context.Context, vmid int64) (*hostd.VMConfig, error)
-	DestroyVM(ctx context.Context, vmid int64, poll time.Duration) (bool, error)
+	DestroyVM(ctx context.Context, vmid int64, expectName string, poll time.Duration) (bool, error)
 	ListPublicIPs(ctx context.Context) ([]hostd.PublicIP, error)
 }
 
@@ -399,7 +399,7 @@ func (p *Provider) AttachExecutorEnvironment(ctx context.Context, req *pluginsdk
 		return &pluginsdk.AttachExecutorEnvironmentResponse{Error: providerError("credentials_unavailable", 30)}, nil
 	}
 	vm, err := client.GetVM(ctx, s.VMID)
-	if hostd.IsNotFound(err) {
+	if hostd.IsNotFound(err) || (err == nil && !sameVM(vm, s)) {
 		return &pluginsdk.AttachExecutorEnvironmentResponse{Error: providerError("resource_not_found", 0)}, nil
 	}
 	if err != nil {
@@ -424,7 +424,7 @@ func (p *Provider) InspectExecutorEnvironment(ctx context.Context, req *pluginsd
 		return &pluginsdk.InspectExecutorEnvironmentResponse{State: "unknown", Reason: "credentials_unavailable", ExpiresAt: s.ExpiresAt}, nil
 	}
 	vm, err := client.GetVM(ctx, s.VMID)
-	if hostd.IsNotFound(err) {
+	if hostd.IsNotFound(err) || (err == nil && !sameVM(vm, s)) {
 		return &pluginsdk.InspectExecutorEnvironmentResponse{State: "absent", Reason: "resource_not_found"}, nil
 	}
 	if err != nil {
@@ -506,7 +506,7 @@ func (p *Provider) DestroyExecutorEnvironment(ctx context.Context, req *pluginsd
 		return &pluginsdk.DestroyExecutorEnvironmentResponse{Error: providerError("credentials_unavailable", 30)}, nil
 	}
 	t := p.Now()
-	absent, err := client.DestroyVM(ctx, s.VMID, p.PollEvery)
+	absent, err := client.DestroyVM(ctx, s.VMID, s.Hostname, p.PollEvery)
 	if err != nil || !absent {
 		// Kandev's launch-failure cleanup allows 30 s; a slow stop finishes on
 		// the next (idempotent) Destroy.
@@ -549,6 +549,12 @@ func (p *Provider) logf(format string, args ...any) {
 	if p.Logf != nil {
 		p.Logf(format, args...)
 	}
+}
+
+// sameVM guards against hostd's vmid reuse: a handle is ours only while the
+// VM under that vmid still carries the operation-derived hostname.
+func sameVM(vm *hostd.VM, s State) bool {
+	return s.Hostname == "" || vm.Name == s.Hostname
 }
 
 func randomPassword() string {

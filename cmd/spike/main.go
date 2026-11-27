@@ -175,7 +175,7 @@ func main() {
 			return
 		}
 		for _, id := range ids {
-			ok, err := hc.DestroyVM(ctx, id, 2*time.Second)
+			ok, err := hc.DestroyVM(ctx, id, provider.Hostname(*op), 2*time.Second)
 			logf("cleanup vm %d absent=%v err=%v", id, ok, err)
 		}
 	}

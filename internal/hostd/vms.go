@@ -188,14 +188,20 @@ func (c *Client) EnsureVM(ctx context.Context, in CreateVMInput, ipv4RetryEvery 
 }
 
 // DestroyVM stops (hard) and deletes the VM, releasing its IPv4. It returns
-// confirmedAbsent=true only when a follow-up GET answers 404.
-func (c *Client) DestroyVM(ctx context.Context, vmid int64, poll time.Duration) (bool, error) {
+// confirmedAbsent=true only when a follow-up GET answers 404, or when the
+// vmid now belongs to a VM with another name. hostd reuses vmids (seen live:
+// four consecutive VMs were all 1073), so a stale handle must never delete a
+// different environment's VM: expectName guards every destructive call.
+func (c *Client) DestroyVM(ctx context.Context, vmid int64, expectName string, poll time.Duration) (bool, error) {
 	vm, err := c.GetVM(ctx, vmid)
 	if IsNotFound(err) {
 		return true, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if expectName != "" && vm.Name != expectName {
+		return true, nil
 	}
 	if vm.Status != "stopped" {
 		if err := c.SetPower(ctx, vmid, "stop"); err != nil && !IsNotFound(err) {
