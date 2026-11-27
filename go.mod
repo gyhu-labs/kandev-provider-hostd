@@ -4,7 +4,7 @@ go 1.26.0
 
 // Release binaries terminate and verify TLS: build them with a current patch
 // release, not the language-version floor that setup-go would pick from `go`.
-toolchain go1.26.8
+toolchain go1.26.11
 
 require (
 	github.com/kdlbs/kandev/pluginsdk v0.4.0
