@@ -6,7 +6,7 @@ id: "kandev-provider-hostd"
 api_version: 2
 # pluginsdk v0.4.0 (host_release 0.103.0) is pinned in go.mod.
 min_kandev_version: "0.103.0"
-version: "0.1.0"
+version: "0.1.1"
 display_name: "hostd.cloud VM executor"
 description: "One hostd.cloud VM per Kandev environment; agentctl behind an IP certificate from a name-constrained CA."
 author: "gyhu-labs"

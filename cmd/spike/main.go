@@ -38,13 +38,20 @@ type memStore struct {
 	m  map[string]string
 }
 
+// memStore enforces Kandev's plugin secret key pattern like the real Host.
 func (s *memStore) GetSecret(_ context.Context, k string) (string, bool, error) {
+	if !provider.SecretKeyPattern.MatchString(k) {
+		return "", false, fmt.Errorf("invalid secret key %q", k)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.m[k]
 	return v, ok, nil
 }
 func (s *memStore) SetSecret(_ context.Context, k, v string) error {
+	if !provider.SecretKeyPattern.MatchString(k) {
+		return fmt.Errorf("invalid secret key %q", k)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.m == nil {
