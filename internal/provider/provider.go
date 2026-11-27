@@ -6,12 +6,14 @@ package provider
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -118,7 +120,24 @@ func (p *Provider) secretStore() SecretStore {
 	return nil
 }
 
-func secretKey(profileID string) string { return "profile-credentials/" + profileID }
+// SecretKeyPattern is the key grammar Kandev's Host enforces on every plugin
+// secret RPC (kandev apps/backend/internal/plugins/config.go
+// pluginSecretKeyPattern, checked in host.go checkSecretAccess). A key outside
+// it fails with InvalidArgument, so the test fakes enforce it too.
+var SecretKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+
+const secretKeyPrefix = "profile-credentials."
+
+// secretKey names the plugin-owned secret holding a profile's credentials.
+// Kandev profile IDs are UUIDs, which fit the pattern as they are; any other
+// ID is hashed so the key always stays a single valid identifier.
+func secretKey(profileID string) string {
+	if k := secretKeyPrefix + profileID; profileID != "" && SecretKeyPattern.MatchString(k) {
+		return k
+	}
+	sum := sha256.Sum256([]byte(profileID))
+	return secretKeyPrefix + "sha256-" + hex.EncodeToString(sum[:])
+}
 
 // rememberCredentials parses the profile's transient secrets and keeps them
 // in the plugin-owned secret store (Kandev's encrypted vault) keyed by
@@ -168,8 +187,11 @@ func (p *Provider) loadCredentials(ctx context.Context, profileID string) (*Cred
 		return nil, errors.New("profile credentials are unavailable")
 	}
 	raw, found, err := store.GetSecret(ctx, secretKey(profileID))
-	if err != nil || !found {
-		return nil, errors.New("profile credentials are unavailable")
+	if err != nil {
+		return nil, fmt.Errorf("profile credentials are unavailable: load: %w", err)
+	}
+	if !found {
+		return nil, errors.New("profile credentials are unavailable: none stored for this profile")
 	}
 	var s Secrets
 	if err := json.Unmarshal([]byte(raw), &s); err != nil || s.CACertPEM == "" {
@@ -239,6 +261,10 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 	}
 	creds, err := p.rememberCredentials(ctx, prof, req.GetProfile().GetSecretValues())
 	if err != nil {
+		// Kandev drops a provider error that comes without a resource and
+		// reports only "allocation outcome is unknown", so this log line is
+		// the only place the cause shows. Credential errors carry no values.
+		p.logf("op=%s profile=%s credentials: %v", short(rc.GetOperationId()), prof.ID, err)
 		return &pluginsdk.ProvisionExecutorEnvironmentResponse{Error: providerError("invalid_credentials", 0)}, nil
 	}
 	boot, err := parseBootstrap(req.GetBootstrapJson())
@@ -368,6 +394,7 @@ func (p *Provider) RecoverExecutorOperation(ctx context.Context, req *pluginsdk.
 	}
 	creds, err := p.rememberCredentials(ctx, prof, req.GetProfile().GetSecretValues())
 	if err != nil {
+		p.logf("op=%s profile=%s recover credentials: %v", short(rc.GetOperationId()), prof.ID, err)
 		return &pluginsdk.RecoverExecutorOperationResponse{Outcome: "unknown", Error: providerError("credentials_unavailable", 0)}, nil
 	}
 	client := p.NewClient(prof.APIBaseURL, prof.Project, creds.Token)

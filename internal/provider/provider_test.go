@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -22,12 +23,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// testProfileID has the shape of a real Kandev profile ID (uuid.NewString,
+// task/service/executor_provider_profiles.go newExecutorProfileID).
+const testProfileID = "25806c81-fc5e-496a-907f-de805fc28a43"
+
 type memStore struct {
 	mu sync.Mutex
 	m  map[string]string
 }
 
+// memStore behaves like Kandev's Host secret RPCs, including the key check
+// (plugins/host.go checkSecretAccess → codes.InvalidArgument).
 func (s *memStore) GetSecret(_ context.Context, k string) (string, bool, error) {
+	if !SecretKeyPattern.MatchString(k) {
+		return "", false, fmt.Errorf("rpc error: code = InvalidArgument desc = invalid secret key %q", k)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.m[k]
@@ -35,6 +45,9 @@ func (s *memStore) GetSecret(_ context.Context, k string) (string, bool, error) 
 }
 
 func (s *memStore) SetSecret(_ context.Context, k, v string) error {
+	if !SecretKeyPattern.MatchString(k) {
+		return fmt.Errorf("rpc error: code = InvalidArgument desc = invalid secret key %q", k)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.m == nil {
@@ -126,7 +139,7 @@ func rc(op string) *pluginsdk.ExecutorProviderRequestContext {
 func (f *fixture) provision(t *testing.T, p *Provider, op string) *pluginsdk.ProvisionExecutorEnvironmentResponse {
 	t.Helper()
 	resp, err := p.ProvisionExecutorEnvironment(context.Background(), &pluginsdk.ProvisionExecutorEnvironmentRequest{
-		Context: rc(op), Profile: &pluginsdk.ExecutorProfileSnapshot{ProfileId: "prof-1", Config: f.cfg, SecretValues: f.sec},
+		Context: rc(op), Profile: &pluginsdk.ExecutorProfileSnapshot{ProfileId: testProfileID, Config: f.cfg, SecretValues: f.sec},
 		BootstrapJson: `{"nonce":"n0nce-value","runtime_port":8765,"api_url":"https://kandev.example","execution_id":"` + op + `","artifact_id":"agentctl"}`,
 	})
 	if err != nil {
@@ -175,7 +188,7 @@ func TestProvisionRetriesNoFreeIPv4AndLostReply(t *testing.T) {
 func TestRecoverFoundAbsent(t *testing.T) {
 	f := newFixture(t)
 	p := f.provider()
-	snap := &pluginsdk.ExecutorProfileSnapshot{ProfileId: "prof-1", Config: f.cfg, SecretValues: f.sec}
+	snap := &pluginsdk.ExecutorProfileSnapshot{ProfileId: testProfileID, Config: f.cfg, SecretValues: f.sec}
 	r, _ := p.RecoverExecutorOperation(context.Background(), &pluginsdk.RecoverExecutorOperationRequest{Context: rc("op-R"), Profile: snap})
 	if r.GetOutcome() != "absent" {
 		t.Fatalf("want absent, got %s", r.GetOutcome())
@@ -339,6 +352,75 @@ func TestManifestMatchesCode(t *testing.T) {
 		cfgSSHKeyID, cfgSSHUser, cfgPermittedCIDRs, cfgEdgePort, cfgInstallDocker, cfgCACertPEM, cfgBrokerUpstream} {
 		if _, ok := pv.ProfileSchema.Properties[k]; !ok {
 			t.Errorf("profile option %s missing from profile_schema", k)
+		}
+	}
+}
+
+func TestSecretKeyMatchesKandevPattern(t *testing.T) {
+	if got := secretKey(testProfileID); got != "profile-credentials."+testProfileID {
+		t.Fatalf("a UUID profile ID must be used as is, got %q", got)
+	}
+	for _, id := range []string{testProfileID, "", "a/b", "../x", "id with spaces", strings.Repeat("x", 200), "prof:1", "ünïcode"} {
+		k := secretKey(id)
+		if !SecretKeyPattern.MatchString(k) {
+			t.Fatalf("secretKey(%q) = %q violates Kandev's plugin secret key pattern", id, k)
+		}
+	}
+	if secretKey("a/b") == secretKey("a/c") {
+		t.Fatal("hashed keys must stay distinct per profile")
+	}
+}
+
+func TestProvisionStoresCredentialsUnderKandevKey(t *testing.T) {
+	f := newFixture(t)
+	p := f.provider()
+	if r := f.provision(t, p, "op-K"); r.GetError() != nil {
+		t.Fatalf("provision error %v", r.GetError())
+	}
+	if _, ok := f.store.m["profile-credentials."+testProfileID]; !ok || len(f.store.m) != 1 {
+		t.Fatalf("credentials must be stored under the Kandev-valid key, store has %d keys", len(f.store.m))
+	}
+}
+
+// failStore rejects every key, like Kandev's Host did for the v0.1.0 key.
+type failStore struct{}
+
+func (failStore) GetSecret(context.Context, string) (string, bool, error) {
+	return "", false, fmt.Errorf("rpc error: code = InvalidArgument desc = invalid secret key")
+}
+func (failStore) SetSecret(context.Context, string, string) error {
+	return fmt.Errorf("rpc error: code = InvalidArgument desc = invalid secret key")
+}
+
+func TestCredentialFailuresAreLoggedWithoutSecrets(t *testing.T) {
+	f := newFixture(t)
+	p := f.provider()
+	p.Secrets = failStore{}
+	var mu sync.Mutex
+	var logs []string
+	p.Logf = func(format string, a ...any) {
+		mu.Lock()
+		logs = append(logs, fmt.Sprintf(format, a...))
+		mu.Unlock()
+	}
+	if r := f.provision(t, p, "op-F"); r.GetError().GetCode() != "invalid_credentials" || r.GetResource() != nil {
+		t.Fatalf("want invalid_credentials without a resource, got %v", r.GetError())
+	}
+	snap := &pluginsdk.ExecutorProfileSnapshot{ProfileId: testProfileID, Config: f.cfg, SecretValues: f.sec}
+	if r, _ := p.RecoverExecutorOperation(context.Background(), &pluginsdk.RecoverExecutorOperationRequest{Context: rc("op-F"), Profile: snap}); r.GetOutcome() != "unknown" {
+		t.Fatalf("want unknown, got %s", r.GetOutcome())
+	}
+	if f.fake.Creates != 0 {
+		t.Fatal("no VM may be created without stored credentials")
+	}
+	if len(logs) != 2 || !strings.Contains(logs[0], "invalid secret key") || !strings.Contains(logs[1], "recover credentials") {
+		t.Fatalf("both credential paths must log the cause, got %q", logs)
+	}
+	for _, l := range logs {
+		for _, v := range []string{f.sec[secHostdToken], f.sec[secLeaseSecret], "PRIVATE KEY"} {
+			if strings.Contains(l, v) {
+				t.Fatalf("log leaks a secret: %q", l)
+			}
 		}
 	}
 }
