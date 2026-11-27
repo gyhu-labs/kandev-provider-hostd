@@ -95,6 +95,40 @@ Kandev only over the connection Kandev opens to it; `KANDEV_API_URL` is used
 only by the Office CLI (`agentctl kandev …`), which this provider does not
 support.
 
+## Agent runtime on the VM
+
+Kandev starts its agents on the execution host with `npx --yes
+--prefer-offline --prefix <tmp>/kandev-managed-npm-runtime-<uid>
+<package>@<exact version>` (claude-acp:
+`@agentclientprotocol/claude-agent-acp@0.109.0` at Kandev v0.103.1). In
+parallel with apt and the uploads, the bootstrap therefore:
+
+- installs Node.js `v24.22.3` (the version in Kandev's own image) from the
+  official `nodejs.org/dist` tarball into `/opt/node/<version>`, checked
+  against a sha256 pinned in `internal/provider/agentruntime.go` (taken from
+  the release's signed `SHASUMS256.txt`); no installer script is run;
+- pre-installs each package of the profile option `agent_npm_packages`
+  (default: Kandev's claude-acp pin; exact `name@x.y.z` only; `none` skips)
+  into npx's cache under the same key Kandev's launch uses, so the agent
+  start needs no download;
+- fails Provision with a `node runtime: …` error unless `node --version`,
+  `npx --version`, the package bin and, for claude-agent-acp, the Claude CLI
+  from `@anthropic-ai/claude-agent-sdk-linux-x64` all work.
+
+`install_node: false` skips all of it (for an image that already carries
+Node). Bump `NodeVersion`, both digests and `DefaultAgentPackages` together
+with the Kandev release.
+
+## Logs
+
+The plugin writes hclog JSON lines to the stderr it had before
+`pluginsdk.Serve`, so go-plugin forwards them to Kandev at their own level
+(plain lines would land at Debug). Kandev's pod log then shows, per
+operation, the VM create/adopt, the IP, each bootstrap phase with its
+duration (`ssh_ready`, `apt_docker_git`, `node_agent_runtime`,
+`upload_agentctl`, `upload_edge`, `tls_leaf`, `services_ready`), `provision
+ready at +…` and every failure cause at warn. No secret is logged.
+
 ## Package and release
 
 `scripts/package.sh` builds the package Kandev installs

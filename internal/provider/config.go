@@ -30,6 +30,8 @@ const (
 	cfgPermittedCIDRs = "permitted_cidrs"
 	cfgEdgePort       = "edge_port"
 	cfgInstallDocker  = "install_docker"
+	cfgInstallNode    = "install_node"
+	cfgAgentPackages  = "agent_npm_packages"
 	cfgCACertPEM      = "ca_cert_pem"
 	cfgBrokerUpstream = "broker_upstream"
 
@@ -61,7 +63,11 @@ type Profile struct {
 	PermittedCIDRs []*net.IPNet
 	EdgePort       int
 	InstallDocker  bool
-	CACertPEM      string
+	// InstallNode puts the pinned Node.js on the VM and pre-installs
+	// AgentPackages into npx's cache (agentruntime.go).
+	InstallNode   bool
+	AgentPackages []string
+	CACertPEM     string
 	// BrokerUpstream is the public HTTPS origin (scheme://host[:port]) of the
 	// same Kandev, reachable from hostd VMs. When it differs from the host of
 	// Kandev's bootstrap api_url (typically an in-cluster name), the VM gets a
@@ -152,6 +158,12 @@ func ParseProfile(snap *pluginsdk.ExecutorProfileSnapshot) (*Profile, []*plugins
 	p.SSHKeyID = intField(cfgSSHKeyID, 0, 1, 1<<40)
 	p.EdgePort = int(intField(cfgEdgePort, 8443, 1024, 65535))
 	p.InstallDocker = get(cfgInstallDocker, "true") != "false"
+	p.InstallNode = get(cfgInstallNode, "true") != "false"
+	if pkgs, err := ParseAgentPackages(get(cfgAgentPackages, DefaultAgentPackages)); err != nil {
+		errs = append(errs, fieldErr(cfgAgentPackages, "invalid"))
+	} else {
+		p.AgentPackages = pkgs
+	}
 	lifetime, err := time.ParseDuration(get(cfgMaxLifetime, defaultLifetime.String()))
 	if err != nil || lifetime <= 0 || lifetime > MaxLifetime {
 		errs = append(errs, fieldErr(cfgMaxLifetime, "invalid"))
