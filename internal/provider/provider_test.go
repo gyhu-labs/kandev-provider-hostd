@@ -14,6 +14,7 @@ import (
 
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/hostd"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/hostd/hostdtest"
+	"github.com/gyhu-labs/kandev-provider-hostd/internal/hostdnet"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/lease"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/tlsca"
 	"github.com/kdlbs/kandev/pluginsdk"
@@ -77,7 +78,7 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	nets, _ := tlsca.ParseCIDRs([]string{"38.56.199.0/24"})
+	nets, _ := tlsca.ParseCIDRs(hostdnet.Split(hostdnet.DefaultPermittedCIDRs))
 	caPEM, caKey, err := tlsca.GenerateCA("test", nets, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -332,6 +333,12 @@ func TestManifestMatchesCode(t *testing.T) {
 	for _, k := range []string{secHostdToken, secCAKeyPEM, secSSHKey, secLeaseSecret} {
 		if !pv.ProfileSchema.Properties[k].Secret {
 			t.Errorf("%s must be secret: true", k)
+		}
+	}
+	for _, k := range []string{cfgProject, cfgAPIBaseURL, cfgCPUMode, cfgCores, cfgRAMGB, cfgDiskGB, cfgImage, cfgMaxLifetime,
+		cfgSSHKeyID, cfgSSHUser, cfgPermittedCIDRs, cfgEdgePort, cfgInstallDocker, cfgCACertPEM, cfgBrokerUpstream} {
+		if _, ok := pv.ProfileSchema.Properties[k]; !ok {
+			t.Errorf("profile option %s missing from profile_schema", k)
 		}
 	}
 }

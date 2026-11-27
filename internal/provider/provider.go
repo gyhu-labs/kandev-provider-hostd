@@ -245,6 +245,13 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 	if err != nil {
 		return nil, err
 	}
+	// Decided before any VM exists: a broker the VM could never reach would
+	// only surface later as a failed clone.
+	relayHost, err := relayTarget(boot.APIURL, prof.BrokerUpstream)
+	if err != nil {
+		p.logf("op=%s broker relay: %v", short(rc.GetOperationId()), err)
+		return &pluginsdk.ProvisionExecutorEnvironmentResponse{Error: providerError("relay_unavailable", 0, fieldErr(cfgBrokerUpstream, "unusable"))}, nil
+	}
 	unlock := p.lockOp(rc.GetOperationId())
 	defer unlock()
 	ctx, cancel := withRequestDeadline(ctx, rc)
@@ -302,6 +309,7 @@ func (p *Provider) ProvisionExecutorEnvironment(ctx context.Context, req *plugin
 		IP: ip, User: prof.SSHUser, Signer: creds.SSHSigner, Resource: Handle(prof.Project, vmid),
 		RuntimePort: boot.RuntimePort, EdgePort: prof.EdgePort, Nonce: boot.Nonce, APIURL: boot.APIURL,
 		LeaseKey: lease.DeriveVMKey(creds.LeaseSecret, rc.GetOperationId()), InstallTools: prof.InstallDocker,
+		RelayHost: relayHost, RelayUpstream: prof.BrokerUpstream,
 		Agentctl: agentctl, Edge: edgeBin,
 		SignCSR: func(csr []byte, leafIP net.IP) ([]byte, time.Time, error) {
 			certPEM, cert, err := creds.CA.IssueLeaf(csr, leafIP, prof.MaxLifetime)

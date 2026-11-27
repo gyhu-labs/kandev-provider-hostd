@@ -1,8 +1,9 @@
 # kandev-provider-hostd
 
-> **Status: spike / not production.** Proves the hard parts of a Kandev remote
-> executor provider backed by [hostd.cloud](https://hostd.cloud) VMs. It has
-> never been installed into a running Kandev. Do not use it for real workloads.
+> **Status: pilot (v0.1.x).** A Kandev remote executor provider backed by
+> [hostd.cloud](https://hostd.cloud) VMs. The provider contract was proven
+> against real hostd VMs by a harness; the first supervised run inside a live
+> Kandev is the v0.1.0 pilot. Expect contract churn with every Kandev release.
 
 A [Kandev](https://github.com/kdlbs/kandev) plugin that implements the
 `pluginsdk.ExecutorProviderPlugin` contract (7 RPCs, contract version 1,
@@ -37,17 +38,91 @@ Go's verifier enforces the constraints. A leaked CA key therefore cannot mint
 a certificate that a client trusting this CA would accept for any hostname or
 for an address outside the range. `internal/tlsca/ca_test.go` covers this.
 
-Kandev would trust the CA through `SSL_CERT_FILE`/`SSL_CERT_DIR`. That is a
-deployment change outside this repo. Let's Encrypt IP certificates are the
-documented alternative (see the spike report).
+Kandev trusts the CA through `SSL_CERT_FILE` pointing at a bundle of the
+image's system roots plus this CA (a deployment change outside this repo).
+Go reads `SSL_CERT_FILE` instead of its default bundle file, so the bundle
+must keep the system roots. Let's Encrypt IP certificates are the documented
+alternative; they were rejected because hostd reuses IPv4 addresses across
+customers immediately.
+
+### hostd address space (one config value)
+
+`internal/hostdnet` is the only place the hostd ranges are written down:
+IPv4 `38.56.199.0/24` and `155.133.32.0/24` (CA constraints, profile default
+`permitted_cidrs`), IPv6 `2a0e:7d80::/48` (allow-lists only; VMs are created
+IPv4-only). They are the prefixes announced by **AS60594** (T-Band, hostd).
+Re-check them before every CA ceremony and quarterly:
+
+```
+curl -s 'https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS60594&starttime=<YYYY-MM-DD>' |
+  jq -r '.data.prefixes[] | [.prefix, .timelines[0].starttime, .timelines[-1].endtime] | @tsv'
+```
+
+A new IPv4 prefix needs a new CA (`hostd-ca init`), the new range in the
+deployment's egress policy and Access allow-list, and a profile update.
+
+### CA ceremony
+
+```
+go run ./cmd/hostd-ca init --cert hostd-ca.crt --key hostd-ca.key   # ECDSA P-256, ~2 years, hostdnet ranges
+go run ./cmd/hostd-ca show --cert hostd-ca.crt                      # public summary + fingerprint
+```
+
+The key file is written 0600 and never printed. Move it into the secret
+store (it becomes the profile secret `ca_key_pem`) and `shred -u` the file.
+
+## Git credential broker relay
+
+Kandev gives a remote environment one broker URL,
+`<githubCredentialBroker.publicBaseUrl>/api/v1/git/credentials/resolve`, and
+the bootstrap `api_url` from the same base. When that base is an in-cluster
+name (it also serves the Kubernetes executors), a hostd VM cannot reach it.
+Set the profile option `broker_upstream` to the public origin of the same
+Kandev (e.g. `https://kandev.example.com`). The VM then gets:
+
+- `/etc/hosts`: the broker name → `127.0.0.1`;
+- `hostd-edge` serving `127.0.0.1:443` with a VM-local certificate whose
+  anchor CA is name-constrained to that one host name (its key is never
+  written to disk) and trusted only in the VM's system store;
+- forwarding of exactly `GET|POST /api/v1/git/credentials/resolve` and
+  `POST /api/v1/git/credentials/reissue` to `broker_upstream`, with no
+  cookies, Authorization or forwarding headers, no redirects followed.
+
+The upstream must let the hostd address space reach those two paths (for
+example a path-scoped Cloudflare Access bypass for the hostd ranges). No
+other Kandev path is used by a regular task session: agentctl talks to
+Kandev only over the connection Kandev opens to it; `KANDEV_API_URL` is used
+only by the Office CLI (`agentctl kandev …`), which this provider does not
+support.
+
+## Package and release
+
+`scripts/package.sh` builds the package Kandev installs
+(`kandev-provider-hostd-<version>.tar.gz`: `manifest.yaml`,
+`server/plugin-linux-amd64`, `server/hostd-edge-linux-amd64`, README,
+LICENSE, `checksums.txt`). It is reproducible (static binaries without build
+IDs, mtimes from the last commit). CI runs `kandev-sdk-check` and verifies
+the archive with Kandev's own `pkgtar.Verify` and `pkgtar.Install` at the
+pinned Kandev release. Pushing tag `vX.Y.Z` (equal to the manifest
+`version`) publishes the package and its `.sha256` as release assets.
+
+Install (Kandev admin, PAT or session):
+
+```
+POST /api/plugins/install  {"url": "https://github.com/gyhu-labs/kandev-provider-hostd/releases/download/vX.Y.Z/kandev-provider-hostd-X.Y.Z.tar.gz"}
+```
 
 ## Layout
 
 ```
 cmd/kandev-provider-hostd  plugin binary (pluginsdk.Serve)
-cmd/hostd-edge             per-VM TLS front (csr | serve), uploaded by the plugin
+cmd/hostd-edge             per-VM TLS front (csr | relay-init | serve), uploaded by the plugin
+cmd/hostd-ca               CA ceremony (init | show)
+cmd/plugin-pack            Kandev plugin package writer/verifier
 cmd/spike                  live harness: Provision → Resolve → HTTPS → Destroy on real hostd
 internal/hostd             hostd API client (429 Retry-After, "No free public IPv4" retry, adopt-by-name)
+internal/hostdnet          hostd address space (AS60594), the single source for ranges
+internal/pkgpack           package format (mirror of Kandev's pkgtar rules)
 internal/tlsca             name-constrained CA, leaf issuance
 internal/lease             lease tokens + a mirror of Kandev's lease validation rules
 internal/edge              edge reverse proxy

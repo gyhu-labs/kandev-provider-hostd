@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/hostd"
+	"github.com/gyhu-labs/kandev-provider-hostd/internal/hostdnet"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/lease"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/provider"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/tlsca"
@@ -85,7 +86,7 @@ func main() {
 	keyPath := flag.String("ssh-key", "", "SSH private key file for that key id")
 	agentctl := flag.String("agentctl", "", "agentctl linux-amd64 binary")
 	edgeBin := flag.String("edge", "", "hostd-edge linux-amd64 binary")
-	cidrs := flag.String("cidrs", "38.56.199.0/24", "CA permitted IPv4 ranges")
+	cidrs := flag.String("cidrs", hostdnet.DefaultPermittedCIDRs, "CA permitted IPv4 ranges")
 	op := flag.String("op", "", "operation id (default random)")
 	out := flag.String("out", "", "write timings JSON here")
 	keep := flag.Bool("keep", false, "do not destroy (never use in CI)")

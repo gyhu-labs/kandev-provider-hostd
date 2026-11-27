@@ -30,6 +30,9 @@ type Config struct {
 	ControlPort  uint32 `json:"control_port"`
 	InstanceBase uint32 `json:"instance_port_base"`
 	InstanceMax  uint32 `json:"instance_port_max"`
+	// Relay, when set, also serves the loopback Git credential broker relay
+	// (relay.go).
+	Relay *RelayConfig `json:"relay,omitempty"`
 }
 
 // Files inside the edge directory.
