@@ -1,0 +1,133 @@
+# Kandev plugin manifest (docs/public/plugins-manifest.md, "Remote executor
+# providers"). SPIKE: not production. The package tarball also carries
+# server/hostd-edge-linux-amd64, the per-VM TLS front the plugin uploads.
+id: "kandev-provider-hostd"
+api_version: 2
+# pluginsdk v0.4.0 (host_release 0.103.0) is pinned in go.mod.
+min_kandev_version: "0.103.0"
+version: "0.0.1"
+display_name: "hostd.cloud VM executor (spike)"
+description: "One hostd.cloud VM per Kandev environment; agentctl behind an IP certificate from a name-constrained CA."
+author: "gyhu-labs"
+categories: ["tools"]
+repo_url: "https://github.com/gyhu-labs/kandev-provider-hostd"
+
+runtime:
+  type: binary
+  executables:
+    linux-amd64: "server/plugin-linux-amd64"
+
+capabilities:
+  executor_provider: true
+  # Host.GetSecret/SetSecret keep profile credentials for the RPCs that carry
+  # no profile (Attach, Inspect, ResolveConnection, Destroy).
+  secrets: true
+
+executor_providers:
+  - key: "hostd-vm"
+    display_name: "hostd.cloud VM"
+    description: "A fresh hostd.cloud VM per environment with Docker, deleted with its public IPv4 on cleanup."
+    contract_version: 1
+    supported_state_versions: [1]
+    profile_schema:
+      type: object
+      required: [project, ssh_key_id, ca_cert_pem, hostd_api_token, ca_key_pem, ssh_private_key, lease_secret]
+      properties:
+        project:
+          type: string
+          title: hostd project UUID
+        api_base_url:
+          type: string
+          title: API base URL (default https://api.hostd.cloud/v1)
+        cpu_mode:
+          type: string
+          title: CPU class
+          enum: [light, regular]
+        cores:
+          type: integer
+          title: vCPU
+          minimum: 1
+          maximum: 8
+        ram_gb:
+          type: integer
+          title: RAM (GB)
+          minimum: 1
+          maximum: 64
+        disk_gb:
+          type: integer
+          title: Disk (GB)
+          minimum: 10
+          maximum: 500
+        image:
+          type: string
+          title: OS image (default debian-13-amd64.qcow2)
+        max_lifetime:
+          type: string
+          title: Maximum VM lifetime (Go duration, at most 168h)
+        ssh_key_id:
+          type: integer
+          title: hostd SSH key id
+          minimum: 1
+        ssh_user:
+          type: string
+          title: VM login user (default kandev)
+        permitted_cidrs:
+          type: string
+          title: Public IPv4 ranges the CA may certify (comma separated)
+        edge_port:
+          type: integer
+          title: Public HTTPS port of the VM edge
+          minimum: 1024
+          maximum: 65535
+        install_docker:
+          type: boolean
+          title: Install docker.io and git at bootstrap
+        ca_cert_pem:
+          type: string
+          title: Name-constrained CA certificate (PEM)
+        hostd_api_token:
+          type: string
+          title: hostd API token
+          secret: true
+        ca_key_pem:
+          type: string
+          title: CA private key (PKCS#8 PEM)
+          secret: true
+        ssh_private_key:
+          type: string
+          title: SSH private key for the hostd SSH key id
+          secret: true
+        lease_secret:
+          type: string
+          title: Lease signing secret (32+ chars)
+          secret: true
+    resource_state_schema:
+      type: object
+      additionalProperties: false
+      required: [vmid, project, hostname]
+      properties:
+        vmid: {type: integer, minimum: 1}
+        ip: {type: string}
+        project: {type: string}
+        hostname: {type: string}
+        profile_id: {type: string}
+        api_base_url: {type: string}
+        ssh_user: {type: string}
+        ssh_host_key: {type: string}
+        edge_port: {type: integer, minimum: 1, maximum: 65535}
+        cpu_mode: {type: string, enum: [light, regular]}
+        cores: {type: integer, minimum: 1, maximum: 8}
+        ram_gb: {type: integer, minimum: 1, maximum: 64}
+        created_at: {type: string}
+        expires_at: {type: string}
+        leaf_expires_at: {type: string}
+        bootstrapped: {type: boolean}
+    capabilities:
+      terminal: true
+      files: true
+      git: true
+      embedded_editor: false
+      preview: false
+      reattach: true
+      retention: bounded
+      maximum_lifetime_seconds: 604800

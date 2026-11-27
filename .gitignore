@@ -1,0 +1,24 @@
+# Keys, certificates and secrets never belong in this public repo.
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+id_*
+key
+key.pub
+known_hosts
+.env
+.env.*
+*.token
+
+# Build output and harness artefacts
+/bin/
+/dist/
+*.tar.gz
+/server/
+agentctl*
+!**/*.go
+run*.json
+run*.log
