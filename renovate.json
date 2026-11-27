@@ -1,0 +1,46 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Europe/Warsaw",
+  "schedule": ["* 0-6 * * 1"],
+  "prConcurrentLimit": 5,
+  "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "labels": ["security"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "The plugin SDK must match the pluginsdk version of the Kandev release that runs in production (kandev v0.103.x = pluginsdk v0.4.0). Bump it only together with the Kandev upgrade in skbki/argo-m2: approve from the Dependency Dashboard, never merge on its own.",
+      "matchDatasources": ["go"],
+      "matchPackageNames": ["github.com/kdlbs/kandev/pluginsdk"],
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "kandev-sdk"]
+    },
+    {
+      "description": "The Go toolchain (go directive) follows the version Kandev's pluginsdk requires; review with the SDK bump.",
+      "matchDatasources": ["golang-version"],
+      "rangeStrategy": "bump",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "GitHub Actions: one weekly PR, digest-pinned (config:best-practices).",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Other Go modules (grpc, protobuf, x/crypto ...): minor and patch updates grouped into one weekly PR.",
+      "matchDatasources": ["go"],
+      "matchPackageNames": ["!github.com/kdlbs/kandev/pluginsdk"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "go modules (non-major)"
+    }
+  ]
+}
