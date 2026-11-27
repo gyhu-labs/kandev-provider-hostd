@@ -22,7 +22,6 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test -race -count=1 ./...
-      - name: build plugin and edge (linux/amd64)
-        run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/plugin-linux-amd64 ./cmd/kandev-provider-hostd
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/hostd-edge-linux-amd64 ./cmd/hostd-edge
+  # Builds the release package and verifies it with Kandev's own installer.
+  package:
+    uses: ./.github/workflows/package.yml

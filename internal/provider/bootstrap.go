@@ -47,8 +47,13 @@ type BootstrapInput struct {
 	APIURL       string
 	LeaseKey     []byte
 	InstallTools bool
-	Agentctl     Blob
-	Edge         Blob
+	// RelayHost/RelayUpstream enable the loopback Git credential broker
+	// relay (edge/relay.go): RelayHost is the broker name from Kandev's
+	// api_url, RelayUpstream the public origin it is forwarded to.
+	RelayHost     string
+	RelayUpstream string
+	Agentctl      Blob
+	Edge          Blob
 	// SignCSR issues the leaf for IP from the VM-generated CSR.
 	SignCSR func(csrPEM []byte, ip net.IP) (certPEM []byte, notAfter time.Time, err error)
 	// Phase reports a finished phase with its duration (no secrets).
@@ -146,10 +151,17 @@ docker info >/dev/null`, nil)
 	if err != nil {
 		return nil, err
 	}
-	cfg, _ := json.Marshal(edge.Config{
+	edgeCfg := edge.Config{
 		Resource: in.Resource, Listen: fmt.Sprintf(":%d", in.EdgePort), ControlPort: in.RuntimePort,
 		InstanceBase: instancePortBase, InstanceMax: instancePortMax,
-	})
+	}
+	if in.RelayHost != "" {
+		edgeCfg.Relay = &edge.RelayConfig{Listen: relayListen, Host: in.RelayHost, Upstream: in.RelayUpstream}
+		if _, err := conn.Run(ctx, relaySetupScript(in.RelayHost), nil); err != nil {
+			return nil, fmt.Errorf("broker relay setup: %w", err)
+		}
+	}
+	cfg, _ := json.Marshal(edgeCfg)
 	for _, f := range []struct {
 		path string
 		mode uint32

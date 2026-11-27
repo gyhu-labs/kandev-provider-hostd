@@ -1,0 +1,62 @@
+name: package
+# Reusable: builds the plugin package, checks SDK compatibility, and verifies
+# the result with Kandev's own installer code (pkgtar.Verify + pkgtar.Install)
+# at the pinned Kandev release. Called by ci.yml (every PR/push) and
+# release.yml (tags).
+on:
+  workflow_call:
+    inputs:
+      expect_version:
+        description: Required manifest version (the tag without "v"); empty skips the check
+        type: string
+        default: ""
+permissions:
+  contents: read
+env:
+  # Kandev release the package is verified against: the base of the live
+  # fork image (0.103.1-gyhu.N). Bump together with the Kandev deployment.
+  KANDEV_REF: v0.103.1
+  # pluginsdk version pinned in go.mod.
+  PLUGINSDK_VERSION: v0.4.0
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: SDK compatibility (kandev-sdk-check)
+        run: go run "github.com/kdlbs/kandev/pluginsdk/cmd/kandev-sdk-check@${PLUGINSDK_VERSION}" --manifest package/manifest.yaml
+      - name: build package
+        id: pkg
+        env:
+          EXPECT_VERSION: ${{ inputs.expect_version }}
+        run: scripts/package.sh dist
+      - name: checkout Kandev ${{ env.KANDEV_REF }} (installer code only)
+        uses: actions/checkout@v4
+        with:
+          repository: kdlbs/kandev
+          ref: ${{ env.KANDEV_REF }}
+          path: .kandev
+          persist-credentials: false
+          sparse-checkout: |
+            apps/backend
+            pluginsdk
+      - name: verify with Kandev's pkgtar (Verify + Install)
+        env:
+          HOSTD_PACKAGE: ${{ github.workspace }}/${{ steps.pkg.outputs.package }}
+          HOSTD_VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          cp .github/kandev-verify/hostd_package_test.go .kandev/apps/backend/internal/plugins/pkgtar/zz_hostd_package_test.go
+          cd .kandev/apps/backend
+          go test -count=1 -v -run '^TestHostdProviderPackage$' ./internal/plugins/pkgtar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-package
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

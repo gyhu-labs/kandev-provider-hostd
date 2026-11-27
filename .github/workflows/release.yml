@@ -1,0 +1,64 @@
+name: release
+# Push a tag vX.Y.Z whose X.Y.Z equals package/manifest.yaml `version`.
+# Assets: kandev-provider-hostd-X.Y.Z.tar.gz (the Kandev plugin package with
+# its internal checksums.txt) and its .sha256. Install with
+#   POST /api/plugins/install {"url": "<tar.gz browser_download_url>"}
+on:
+  push:
+    tags: ["v*.*.*"]
+permissions:
+  contents: read
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./... && go test -race -count=1 ./...
+  package:
+    needs: version
+    uses: ./.github/workflows/package.yml
+    with:
+      expect_version: ${{ needs.version.outputs.version }}
+  publish:
+    needs: [version, test, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-package
+          path: dist
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cd dist
+          sha256sum -c "kandev-provider-hostd-${VERSION}.tar.gz.sha256"
+          {
+            echo "Kandev plugin package for kandev-provider-hostd ${VERSION}."
+            echo
+            echo "Verified in CI with Kandev's own installer code (pkgtar.Verify + pkgtar.Install) and kandev-sdk-check."
+            echo
+            echo '```'
+            cat "kandev-provider-hostd-${VERSION}.tar.gz.sha256"
+            echo '```'
+            echo
+            echo "Install (Kandev admin): \`POST /api/plugins/install\` with \`{\"url\": \"https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/kandev-provider-hostd-${VERSION}.tar.gz\"}\`."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "kandev-provider-hostd ${VERSION}" --notes-file notes.md \
+            "kandev-provider-hostd-${VERSION}.tar.gz" "kandev-provider-hostd-${VERSION}.tar.gz.sha256"

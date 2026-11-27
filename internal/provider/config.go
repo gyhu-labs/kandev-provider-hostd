@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gyhu-labs/kandev-provider-hostd/internal/hostdnet"
 	"github.com/gyhu-labs/kandev-provider-hostd/internal/tlsca"
 	"github.com/kdlbs/kandev/pluginsdk"
 	"golang.org/x/crypto/ssh"
@@ -30,13 +31,14 @@ const (
 	cfgEdgePort       = "edge_port"
 	cfgInstallDocker  = "install_docker"
 	cfgCACertPEM      = "ca_cert_pem"
+	cfgBrokerUpstream = "broker_upstream"
 
 	secHostdToken   = "hostd_api_token"
 	secCAKeyPEM     = "ca_key_pem"
 	secSSHKey       = "ssh_private_key"
 	secLeaseSecret  = "lease_secret"
 	defaultImage    = "debian-13-amd64.qcow2"
-	defaultCIDRs    = "38.56.199.0/24"
+	defaultCIDRs    = hostdnet.DefaultPermittedCIDRs
 	defaultLifetime = 8 * time.Hour
 	// MaxLifetime is the manifest's maximum_lifetime_seconds (7 days), equal
 	// to the leaf certificate cap so a VM never outlives its certificate.
@@ -60,6 +62,11 @@ type Profile struct {
 	EdgePort       int
 	InstallDocker  bool
 	CACertPEM      string
+	// BrokerUpstream is the public HTTPS origin (scheme://host[:port]) of the
+	// same Kandev, reachable from hostd VMs. When it differs from the host of
+	// Kandev's bootstrap api_url (typically an in-cluster name), the VM gets a
+	// loopback relay for the Git credential broker paths only.
+	BrokerUpstream string
 }
 
 // Secrets are the transient credentials. They are never written to resource
@@ -156,6 +163,13 @@ func ParseProfile(snap *pluginsdk.ExecutorProfileSnapshot) (*Profile, []*plugins
 		errs = append(errs, fieldErr(cfgPermittedCIDRs, "invalid"))
 	}
 	p.PermittedCIDRs = nets
+	if raw := get(cfgBrokerUpstream, ""); raw != "" {
+		u, err := ParseBrokerUpstream(raw)
+		if err != nil {
+			errs = append(errs, fieldErr(cfgBrokerUpstream, "invalid"))
+		}
+		p.BrokerUpstream = u
+	}
 	if p.CACertPEM == "" {
 		errs = append(errs, fieldErr(cfgCACertPEM, "required"))
 	} else if cert, err := tlsca.ParseCertificatePEM([]byte(p.CACertPEM)); err != nil || tlsca.CheckConstrained(cert) != nil {

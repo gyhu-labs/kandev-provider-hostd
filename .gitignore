@@ -16,6 +16,8 @@ known_hosts
 # Build output and harness artefacts
 /bin/
 /dist/
+/.build/
+/.kandev/
 *.tar.gz
 /server/
 agentctl*

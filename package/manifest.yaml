@@ -1,12 +1,13 @@
 # Kandev plugin manifest (docs/public/plugins-manifest.md, "Remote executor
-# providers"). SPIKE: not production. The package tarball also carries
+# providers"). Pilot release. The package tarball also carries
 # server/hostd-edge-linux-amd64, the per-VM TLS front the plugin uploads.
+# The release workflow refuses a tag whose version differs from `version`.
 id: "kandev-provider-hostd"
 api_version: 2
 # pluginsdk v0.4.0 (host_release 0.103.0) is pinned in go.mod.
 min_kandev_version: "0.103.0"
-version: "0.0.1"
-display_name: "hostd.cloud VM executor (spike)"
+version: "0.1.0"
+display_name: "hostd.cloud VM executor"
 description: "One hostd.cloud VM per Kandev environment; agentctl behind an IP certificate from a name-constrained CA."
 author: "gyhu-labs"
 categories: ["tools"]
@@ -73,7 +74,10 @@ executor_providers:
           title: VM login user (default kandev)
         permitted_cidrs:
           type: string
-          title: Public IPv4 ranges the CA may certify (comma separated)
+          title: Public IPv4 ranges the CA may certify (comma separated; default hostd AS60594 38.56.199.0/24,155.133.32.0/24)
+        broker_upstream:
+          type: string
+          title: Public HTTPS origin of this Kandev for the Git credential broker (enables the VM relay when Kandev's broker URL is in-cluster)
         edge_port:
           type: integer
           title: Public HTTPS port of the VM edge
